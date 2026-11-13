@@ -1,10 +1,23 @@
 using Microsoft.EntityFrameworkCore;
 using Scalar.AspNetCore;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddDbContext<UrlDb>(opt => opt.UseInMemoryDatabase("Urls"));
+
+var connectionString = builder.Configuration.GetConnectionString("Urls") ?? "DataSource=Urls.db";
+builder.Services.AddSqlite<UrlDb>(connectionString);
 builder.Services.AddOpenApi();
+builder.Services.AddProblemDetails();
+builder.Services.AddHealthChecks()
+    .AddDbContextCheck<UrlDb>(
+        name: "Url db",
+        tags: ["ready"]);
+
 var app = builder.Build();
+
+app.UseExceptionHandler();   // catches unhandled exceptions
+app.UseStatusCodePages();   // fills empty 4xx/5xx bodies
+
 
 if (app.Environment.IsDevelopment())
 {
@@ -12,9 +25,8 @@ if (app.Environment.IsDevelopment())
     app.MapScalarApiReference();
 }
 
-app.MapGet("/", () =>
-{
-    return "Hello World";
+app.MapGet("/", () => {
+    throw new Exception("boom");
 });
 
 
@@ -22,9 +34,15 @@ app.MapGet("/", () =>
 app.MapPost("/links", async (AddressReq add, UrlDb db) =>
 {
     if(!Uri.TryCreate(add.Address, UriKind.Absolute, out var uri))
-        return Results.BadRequest("Please enter a valid address");
+        return Results.ValidationProblem(new Dictionary<string, string[]>
+    {
+        ["address"] = ["Please enter a valid address"]
+    });
     if(uri.Scheme is not ("http" or "https"))
-        return Results.BadRequest("Only http or https addresses allowed");
+        return Results.ValidationProblem(new Dictionary<string, string[]>
+    {
+        ["address"] = ["Only http or https addresses allowed"]
+    });
     var hash = TruncatedHasher.GetTruncatedHash(uri.AbsoluteUri);
     var existing = await db.Urls.SingleOrDefaultAsync(u => u.Address == uri.AbsoluteUri);
     var codeExisting = await db.Urls.SingleOrDefaultAsync(u => u.Code == hash);
@@ -35,8 +53,9 @@ app.MapPost("/links", async (AddressReq add, UrlDb db) =>
     if(codeExisting is not null)
     {
         return Results.Problem(
-            statusCode: StatusCodes.Status500InternalServerError,
-            detail: "Could not allocate a unique code. Please retry.");
+            statusCode: StatusCodes.Status409Conflict,
+            title: "Code collision",
+            detail: "A different address already uses the generated code.");
     }
     Url url = new() { Address = uri.AbsoluteUri, Code = hash };
 
@@ -59,8 +78,16 @@ app.MapGet("/{code}", async (string code, UrlDb db) =>
 
 app.MapGet("links", async (UrlDb db) =>
     await db.Urls.ToListAsync());
-    
 
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains("ready")
+});
+
+app.MapHealthChecks("/health/live", new HealthCheckOptions
+{
+    Predicate = _ => false
+});
 
 app.Run();
 

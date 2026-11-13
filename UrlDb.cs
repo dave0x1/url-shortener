@@ -6,4 +6,10 @@ class UrlDb : DbContext
         : base (options) { }
 
     public DbSet<Url> Urls => Set<Url>();
+
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<Url>().HasIndex(u => u.Code).IsUnique();
+        b.Entity<Url>().HasIndex(u => u.Address).IsUnique();
+    }
 }
